@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Valet Scheduler (Demo)</title>
+<style>
+  :root{--accent:#0b84ff;--bg:#f6f8fb;--card:#fff;--muted:#666}
+  body{font-family:Inter,Segoe UI,Roboto,Arial; margin:0;background:var(--bg);color:#111}
+  .wrap{max-width:980px;margin:28px auto;padding:18px}
+  .card{background:var(--card);border-radius:10px;padding:18px;box-shadow:0 6px 18px rgba(14,20,30,0.06);margin-bottom:14px}
+  h1{margin:0 0 12px;font-size:20px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  input,select,button,textarea{padding:10px;border-radius:8px;border:1px solid #ddd;font-size:14px}
+  button{background:var(--accent);color:#fff;border:none;cursor:pointer}
+  .btn-ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  .muted{color:var(--muted)}
+  .small{font-size:13px}
+  .center{text-align:center}
+  .right{text-align:right}
+  label{display:block;margin:8px 0 6px;font-size:13px}
+  .col{flex:1}
+  .nav{display:flex;gap:8px;margin-bottom:12px}
+  .tab{padding:8px 12px;border-radius:8px;border:1px solid #eee;background:#fff;cursor:pointer}
+  .active{border-color:var(--accent);box-shadow:0 4px 14px rgba(11,132,255,0.12)}
+  .list{margin-top:12px}
+  .item{border:1px dashed #eee;padding:10px;border-radius:8px;margin-bottom:8px;background:#fafafa}
+  .meta{font-size:13px;color:var(--muted)}
+  .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px}
+  .status-pending{background:#fff3cd;color:#7a5b00}
+  .status-done{background:#d4edda;color:#155724}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  footer{margin-top:18px;font-size:13px;color:var(--muted)}
+  @media(max-width:520px){ .row{flex-direction:column} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="app"></div>
+  <footer class="center small muted">Demo: frontend-only. For real multi-device sync use Firebase.</footer>
+</div>
+
+<script>
+/* ---------- Simple DB using localStorage ---------- */
+const DB = {
+  usersKey: 'valet_demo_users',
+  reqKey: 'valet_demo_requests',
+  loadUsers(){ return JSON.parse(localStorage.getItem(this.usersKey)||'[]') },
+  saveUsers(u){ localStorage.setItem(this.usersKey, JSON.stringify(u)) },
+  loadRequests(){ return JSON.parse(localStorage.getItem(this.reqKey)||'[]') },
+  saveRequests(r){ localStorage.setItem(this.reqKey, JSON.stringify(r)) }
+}
+
+/* Seed valet account (fixed credential) */
+const VALET_USERNAME = '9lslandValet';
+const VALET_PASSWORD = '9Island123';
+
+/* ---------- Utils ---------- */
+function el(html){ const div=document.createElement('div'); div.innerHTML=html.trim(); return div.firstChild; }
+function q(selector, root=document){ return root.querySelector(selector) }
+function formatDateTime(iso){ const d=new Date(iso); if(isNaN(d)) return '—'; return d.toLocaleString() }
+function nowISO(){ return new Date().toISOString() }
+
+/* ---------- App State ---------- */
+let state = { user: null, role: null } // role: 'resident' or 'valet'
+
+/* ---------- Rendering Entry ---------- */
+const app = document.getElementById('app')
+renderLogin()
+
+/* ---------- Login / Register Screens ---------- */
+function renderLogin(msg){
+  app.innerHTML = ''
+  const card = el(`<div class="card">
+    <h1>Valet Scheduler</h1>
+    <p class="muted small">Login or create a resident account. Valet has separate login.</p>
+    <div class="row" style="align-items:center;margin-top:12px">
+      <div class="col"><input id="username" placeholder="Username" /></div>
+      <div class="col"><input id="password" placeholder="Password" type="password" /></div>
+      <div><button id="loginBtn">Login</button></div>
+    </div>
+    <div style="margin-top:8px" class="row">
+      <button id="createBtn" class="btn-ghost">Create Account</button>
+      <button id="valetBtn" class="btn-ghost">Valet login</button>
+    </div>
+    <p id="msg" class="muted small" style="margin-top:8px">${msg||''}</p>
+  </div>`)
+  app.appendChild(card)
+
+  q('#loginBtn', card).onclick = () => {
+    const u = q('#username', card).value.trim()
+    const p = q('#password', card).value
+    if(!u || !p){ renderLogin('username/password required'); return }
+    // check valet creds first
+    if(u === VALET_USERNAME && p === VALET_PASSWORD){
+      state.role = 'valet'; state.user = { username: VALET_USERNAME, name: 'Valet' }
+      renderValetDashboard()
+      return
+    }
+    const users = DB.loadUsers()
+    const found = users.find(x=>x.username === u && x.password === p)
+    if(!found){ renderLogin('invalid cred or account not found') ; return }
+    state.role = 'resident'; state.user = found
+    renderResidentDashboard()
+  }
+
+  q('#createBtn', card).onclick = () => renderCreateAccount()
+  q('#valetBtn', card).onclick = () => renderValetLoginPrompt()
+}
+
+function renderValetLoginPrompt(){
+  const modal = el(`<div class="card"><h1>Valet login</h1>
+    <p class="muted small">Use the provided valet credentials.</p>
+    <div class="row"><input id="vu" placeholder="Username" /><input id="vp" placeholder="Password" type="password"/><button id="vl">Login</button></div>
+    <div class="small muted" style="margin-top:8px">Username: <b>${VALET_USERNAME}</b> • Password: <b>${VALET_PASSWORD}</b></div>
+    <div style="margin-top:10px"><button id="back" class="btn-ghost">Back</button></div>
+  </div>`)
+  app.innerHTML=''; app.appendChild(modal)
+  q('#vl', modal).onclick = () => {
+    const u = q('#vu', modal).value.trim(), p = q('#vp', modal).value
+    if(u===VALET_USERNAME && p===VALET_PASSWORD){ state.role='valet'; state.user={username:VALET_USERNAME,name:'Valet'}; renderValetDashboard() }
+    else renderValetLoginPrompt()
+  }
+  q('#back', modal).onclick = () => renderLogin()
+}
+
+function renderCreateAccount(msg){
+  app.innerHTML=''
+  const card = el(`<div class="card">
+    <h1>Create Resident Account</h1>
+    <div class="grid">
+      <div>
+        <label>Name</label><input id="name" placeholder="Your full name"/>
+        <label>Unit number</label><input id="unit" placeholder="e.g. 3B"/>
+        <label>Car model</label><input id="model" placeholder="e.g. Toyota Camry"/>
+        <label>Car color</label><input id="color" placeholder="e.g. Black"/>
+      </div>
+      <div>
+        <label>Username</label><input id="ruser" placeholder="Choose username"/>
+        <label>Password</label><input id="rpass" type="password" placeholder="Choose password"/>
+        <div style="margin-top:12px" class="row">
+          <button id="create" >Create account</button>
+          <button id="back" class="btn-ghost">Back</button>
+        </div>
+        <p id="msg" class="muted small">${msg||''}</p>
+      </div>
+    </div>
+  </div>`)
+  app.appendChild(card)
+  q('#back', card).onclick = ()=>renderLogin()
+  q('#create', card).onclick = ()=>{
+    const name = q('#name', card).value.trim()
+    const unit = q('#unit', card).value.trim()
+    const model = q('#model', card).value.trim()
+    const color = q('#color', card).value.trim()
+    const username = q('#ruser', card).value.trim()
+    const password = q('#rpass', card).value
+    if(!name||!unit||!model||!color||!username||!password){ q('#msg', card).textContent='all fields required'; return }
+    const users = DB.loadUsers()
+    if(users.find(u=>u.username===username)){ q('#msg', card).textContent='username taken'; return }
+    const newUser = { username, password, name, unit, model, color, createdAt: nowISO() }
+    users.push(newUser); DB.saveUsers(users)
+    state.role='resident'; state.user=newUser
+    renderResidentDashboard()
+  }
+}
+
+/* ---------- Resident Dashboard ---------- */
+function renderResidentDashboard(){
+  app.innerHTML = ''
+  const card = el(`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Welcome, ${state.user.name}</h1>
+      <div><button id="logout" class="btn-ghost">Logout</button></div>
+    </div>
+    <p class="muted small">Unit ${state.user.unit} • ${state.user.model} (${state.user.color})</p>
+
+    <hr style="margin:12px 0"/>
+
+    <div class="grid">
+      <div class="card" style="padding:12px">
+        <h3>Order / Request Now</h3>
+        <p class="muted small">Bring my car out as soon as possible</p>
+        <div class="row"><button id="nowBtn">Request Now</button></div>
+      </div>
+
+      <div class="card" style="padding:12px">
+        <h3>Schedule Pickup</h3>
+        <label>Date</label><input type="date" id="sdate"/>
+        <label>Time</label><input type="time" id="stime"/>
+        <div style="margin-top:8px" class="row"><button id="schedBtn">Schedule</button></div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <h3>Your Requests</h3>
+      <div id="yourList" class="list"></div>
+    </div>
+
+    <div style="margin-top:12px" class="row">
+      <button id="valetLogin" class="btn-ghost">Valet login</button>
+    </div>
+
+  </div>`)
+  app.appendChild(card)
+  q('#logout', card).onclick = ()=>{ state.user=null; state.role=null; renderLogin() }
+  q('#valetLogin', card).onclick = () => renderValetLoginPrompt()
+  q('#nowBtn', card).onclick = ()=> {
+    createRequest({ type:'now', scheduledAt: null })
+    renderResidentDashboard()
+  }
+  q('#schedBtn', card).onclick = ()=> {
+    const date = q('#sdate', card).value, time = q('#stime', card).value
+    if(!date || !time){ alert('pick date and time') ; return }
+    const dt = new Date(date+'T'+time)
+    if(isNaN(dt)){ alert('invalid date/time'); return }
+    createRequest({ type:'scheduled', scheduledAt: dt.toISOString() })
+    renderResidentDashboard()
+  }
+  renderResidentRequests()
+}
+
+function renderResidentRequests(){
+  const list = q('#yourList')
+  const all = DB.loadRequests().filter(r=>r.username===state.user.username).sort((a,b)=> (new Date(b.createdAt)) - (new Date(a.createdAt)))
+  if(all.length===0){ list.innerHTML = '<div class="muted small">No requests yet</div>'; return }
+  list.innerHTML = ''
+  all.forEach(r=>{
+    const item = el(`<div class="item"><div style="display:flex;justify-content:space-between;align-items:center">
+      <div><b>${r.unit} • ${r.model} (${r.color})</b><div class="meta">${r.type==='now' ? 'Requested now' : 'Scheduled: '+formatDateTime(r.scheduledAt)}</div></div>
+      <div class="right">
+        <div class="meta">Status: <span class="badge ${r.status==='pending'?'status-pending':'status-done'}">${r.status}</span></div>
+      </div>
+    </div>
+    <div class="meta small" style="margin-top:8px">Requested: ${formatDateTime(r.createdAt)} ${r.broughtOutAt?(' • Brought out: '+formatDateTime(r.broughtOutAt)) : ''}</div>
+    </div>`)
+    list.appendChild(item)
+  })
+}
+
+/* ---------- Request Creation ---------- */
+function createRequest({type, scheduledAt}){
+  const reqs = DB.loadRequests()
+  const r = {
+    id: 'r_' + Math.random().toString(36).slice(2,9),
+    username: state.user.username,
+    name: state.user.name,
+    unit: state.user.unit,
+    model: state.user.model,
+    color: state.user.color,
+    type,
+    createdAt: nowISO(),
+    scheduledAt: scheduledAt || null,
+    status: 'pending',
+    broughtOutAt: null
+  }
+  reqs.push(r); DB.saveRequests(reqs)
+  alert('Request created')
+}
+
+/* ---------- Valet Dashboard ---------- */
+let valetRefreshTimer = null
+function renderValetDashboard(){
+  app.innerHTML=''
+  const card = el(`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Valet Dashboard</h1>
+      <div><button id="logout" class="btn-ghost">Logout</button></div>
+    </div>
+    <div class="nav">
+      <div id="tabSoon" class="tab active">Due in 15 minutes</div>
+      <div id="tabAll" class="tab">All scheduled</div>
+    </div>
+    <div id="content"></div>
+  </div>`)
+  app.appendChild(card)
+  q('#logout', card).onclick = ()=>{ state.user=null; state.role=null; renderLogin() }
+  q('#tabSoon', card).onclick = ()=>{ q('#tabSoon', card).classList.add('active'); q('#tabAll', card).classList.remove('active'); renderValetSoon() }
+  q('#tabAll', card).onclick = ()=>{ q('#tabAll', card).classList.add('active'); q('#tabSoon', card).classList.remove('active'); renderValetAll() }
+
+  // auto-refresh list every 10s
+  if(valetRefreshTimer) clearInterval(valetRefreshTimer)
+  valetRefreshTimer = setInterval(()=> {
+    const activeSoon = q('#tabSoon', card).classList.contains('active')
+    if(activeSoon) renderValetSoon()
+    else renderValetAll()
+  }, 10000)
+  renderValetSoon()
+}
+
+function renderValetSoon(){
+  const content = q('#content')
+  const now = new Date()
+  const lookAhead = new Date(now.getTime() + 15*60000) // 15 minutes
+  const all = DB.loadRequests()
+  // due if scheduled between now and lookAhead OR type now created within last 15 minutes
+  const due = all.filter(r=>{
+    if(r.status !== 'pending') return false
+    if(r.type === 'now'){
+      const created = new Date(r.createdAt)
+      return (created <= lookAhead && created >= new Date(now.getTime() - 24*3600000)) // created recently (last day) but within next 15 min considered
+    } else if(r.type === 'scheduled' && r.scheduledAt){
+      const s = new Date(r.scheduledAt)
+      return s >= now && s <= lookAhead
+    }
+    return false
+  }).sort((a,b)=> new Date(a.scheduledAt||a.createdAt) - new Date(b.scheduledAt||b.createdAt))
+
+  content.innerHTML = `<h3 class="muted small">Showing ${due.length} requests due within 15 minutes</h3><div id="soonList" class="list"></div>`
+  const list = q('#soonList', content)
+  if(due.length===0){ list.innerHTML = '<div class="muted small">No cars due in the next 15 minutes.</div>'; return }
+  due.forEach(r=>{
+    const when = r.type==='now' ? 'ASAP' : formatDateTime(r.scheduledAt)
+    const item = el(`<div class="item">
+      <div style="display:flex;justify-content:space-between">
+        <div><b>${r.name} • ${r.unit}</b><div class="meta">${r.model} • ${r.color}</div></div>
+        <div class="right"><div class="meta">${when}</div><div style="margin-top:8px"><button class="bring">Mark brought out</button></div></div>
+      </div>
+      <div class="meta small" style="margin-top:8px">Requested: ${formatDateTime(r.createdAt)}</div>
+    </div>`)
+    list.appendChild(item)
+    q('.bring', item).onclick = ()=> { markBroughtOut(r.id); renderValetSoon() }
+  })
+}
+
+function renderValetAll(){
+  const content = q('#content')
+  const all = DB.loadRequests().filter(r=>r.status==='pending' || r.status==='done').sort((a,b)=> new Date(a.scheduledAt||a.createdAt) - new Date(b.scheduledAt||b.createdAt))
+  content.innerHTML = `<h3 class="muted small">All scheduled & requested (${all.length})</h3><div id="allList" class="list"></div>`
+  const list = q('#allList', content)
+  if(all.length===0){ list.innerHTML = '<div class="muted small">No requests</div>'; return }
+  all.forEach(r=>{
+    const when = r.type==='now' ? 'ASAP' : formatDateTime(r.scheduledAt)
+    const item = el(`<div class="item">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <b>${r.name} • ${r.unit}</b>
+          <div class="meta">${r.model} • ${r.color}</div>
+          <div class="meta small">Requested: ${formatDateTime(r.createdAt)}</div>
+        </div>
+        <div class="right">
+          <div class="meta">${when}</div>
+          <div style="margin-top:8px"><button class="bring">${r.status==='pending'?'Mark brought out':'Already brought'}</button></div>
+        </div>
+      </div>
+      <div class="meta small" style="margin-top:8px">Status: <span class="badge ${r.status==='pending'?'status-pending':'status-done'}">${r.status}</span>
+      ${r.broughtOutAt?(' • Brought: '+formatDateTime(r.broughtOutAt)) : ''}</div>
+    </div>`)
+    list.appendChild(item)
+    q('.bring', item).onclick = ()=> {
+      if(r.status === 'pending') markBroughtOut(r.id)
+      else alert('Already marked brought out')
+      renderValetAll()
+    }
+  })
+}
+
+/* ---------- Mark brought out ---------- */
+function markBroughtOut(id){
+  const reqs = DB.loadRequests()
+  const idx = reqs.findIndex(x=>x.id===id)
+  if(idx===-1) return
+  reqs[idx].status = 'done'
+  reqs[idx].broughtOutAt = nowISO()
+  DB.saveRequests(reqs)
+  alert('Marked brought out: ' + reqs[idx].unit + ' • ' + reqs[idx].model)
+}
+
+/* ---------- Init: create some demo users (if none) ---------- */
+(function seed(){
+  const users = DB.loadUsers()
+  if(users.length===0){
+    users.push({ username:'alice', password:'pass', name:'Alice', unit:'2A', model:'Honda Civic', color:'Blue', createdAt: nowISO() })
+    users.push({ username:'yoel', password:'demo', name:'Yoel', unit:'3B', model:'Tesla Model 3', color:'White', createdAt: nowISO() })
+    DB.saveUsers(users)
+  }
+  if(!DB.loadRequests()) DB.saveRequests([])
+})();
+</script>
+</body>
+</html>
